@@ -818,6 +818,106 @@ class E3SMv3(E3SMv1):
         self.model_name = "E3SMv3"
 
 
+class SCREAM(E3SMv1):
+    def __init__(self, file_path, time_range=None, load_processed=False, time_dim="time", appended_str=False,
+                 all_appended_in_lat=False, single_ice_class=True, include_rain_in_rt=False,
+                 mcphys_scheme="MG2", N_sub=1):
+        """
+        This loads an SCREAM simulation output with all of the necessary parameters for EMC^2 to run.
+
+        Parameters
+        ----------
+        file_path: str
+            Path to an SCREAM simulation.
+        time_range: tuple, list, or array, typically in datetime64 format
+            Two-element array with starting and ending of time range.
+        load_processed: bool
+            If True, treating the 'file_path' variable as an EMC2-processed dataset; thus skipping
+            appended string removal and dimension stacking, which are typically part of pre-processing.
+        time_dim: str
+            Name of the time dimension. Typically "time" or "ncol".
+        appended_str: bool
+            If True, removing appended strings added to fieldnames and coordinates during
+            post-processing (e.g., in cropped regions from global simualtions).
+        all_appended_in_lat: bool
+            If True using only the appended str portion to the lat_dim. Otherwise, combining
+            the appended str from both the lat and lon dims (relevant if appended_str is True).
+        single_ice_class: bool
+            If True, assuming model microphysics incorporate a single ice class (e.g., in P3 implemented
+            in SCREAM).
+        include_rain_in_rt: bool
+            If True, including the rain class (`pl`) in the forward calculations.
+            By default, set to False given that the rain class is excluded from the E3SM radiative scheme
+            calculations.
+        mcphys_scheme: str
+            Name of the microphysics scheme used by the model. Current options are:
+        N_sub: int
+            If using one subcolumn distribution assumption, set to N_sub=1. Note this setting also comes with 
+            binary cloud fraction assignment. Otherwise, using similar treatment as the EAMv3 model subclass for now,
+            which needs further development.
+
+        """
+        super().__init__(file_path, time_range, load_processed, time_dim, appended_str, all_appended_in_lat,
+                         single_ice_class, include_rain_in_rt, mcphys_scheme)
+        if N_sub == 1:
+            self.N_field = {'cl': 'NUMLIQ', 'ci': 'NUMICE', 'pl': 'NUMRAI', 'pi': 'zeros_ns'}
+            self.strat_frac_names = {'cl': 'LIQ_CLOUD_FRAC', 'ci': 'ICE_CLOUD_FRAC', 'pl': 'zeros_cfr', 'pi': 'zeros_cfs'}
+            self.strat_frac_names_for_rad = {'cl': 'LIQ_CLOUD_FRAC', 'ci': 'ICE_CLOUD_FRAC',
+                                             'pl': 'zeros_cfr', 'pi': 'zeros_cfs'}
+            self.strat_re_fields = {'cl': 'AREL', 'ci': 'AREI', 'pi': 'zeros_res', 'pl': 'ADRAIN'}
+            self.q_names_stratiform = {'cl': 'CLDLIQ', 'ci': 'CLDICE', 'pl': 'RAINQM', 'pi': 'zeros_qs'}
+            self.hyd_types = ["cl", "ci", "pl", "pi"]
+
+            self.ds["zeros_ns"] = xr.DataArray(np.zeros_like(self.ds[self.p_field].values),
+                                           dims=self.ds[self.p_field].dims)
+            self.ds["zeros_ns"].attrs["long_name"] = "An array of zeros as only strat output is used for this model"
+            self.ds["zeros_cfr"] = xr.DataArray(np.zeros_like(self.ds[self.p_field].values),
+                                           dims=self.ds[self.p_field].dims)
+            self.ds["zeros_cfr"].attrs["long_name"] = "An array of zeros as only strat output is used for this model"
+            self.ds["zeros_cfs"] = xr.DataArray(np.zeros_like(self.ds[self.p_field].values),
+                                           dims=self.ds[self.p_field].dims)
+            self.ds["zeros_cfs"].attrs["long_name"] = "An array of zeros as only strat output is used for this model"
+            self.ds["zeros_res"] = xr.DataArray(np.zeros_like(self.ds[self.p_field].values),
+                                           dims=self.ds[self.p_field].dims)
+            self.ds["zeros_res"].attrs["long_name"] = "An array of zeros as only strat output is used for this model"
+            self.ds["zeros_qs"] = xr.DataArray(np.zeros_like(self.ds[self.p_field].values),
+                                           dims=self.ds[self.p_field].dims)
+            self.ds["zeros_qs"].attrs["long_name"] = "An array of zeros as only strat output is used for this model"
+            
+            # Diagnose snow from ice based on the diagnosed precipitating ice fraction in SCREAM
+            # Assign binary cloud fraction values to hydrometoer fractions
+            self.ds[self.strat_frac_names["ci"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.N_field["ci"]].values / self.ds["rho_a"].values * 1e6 >= (self.ds[self.q_names_stratiform["ci"]].values * 5e7)), \
+                    1., 0.)
+            self.ds[self.strat_frac_names_for_rad["ci"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.N_field["ci"]].values / self.ds["rho_a"].values * 1e6 >= (self.ds[self.q_names_stratiform["ci"]].values * 5e7)), \
+                    1., 0.)
+            self.ds[self.strat_frac_names["pi"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), 1., 0.)
+            self.ds[self.strat_frac_names_for_rad["pi"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), 1., 0.)
+
+            self.ds[self.q_names_stratiform["pi"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), self.ds[self.q_names_stratiform["ci"]].values, 0.)
+            self.ds[self.N_field["pi"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), self.ds[self.N_field["ci"]].values, 0.)
+            self.ds[self.strat_re_fields["pi"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), self.ds[self.strat_re_fields["ci"]].values*2., 0.)
+
+            self.ds[self.N_field["ci"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), 0., self.ds[self.N_field["ci"]].values)
+            self.ds[self.strat_re_fields["ci"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), 0., self.ds[self.strat_re_fields["ci"]].values)
+            self.ds[self.q_names_stratiform["ci"]].values = np.where((self.ds[self.q_names_stratiform["ci"]].values > 1e-14) & \
+                    (self.ds[self.strat_frac_names["ci"]].values == 0.), 0., self.ds[self.q_names_stratiform["ci"]].values)
+
+            self.ds[self.strat_frac_names["cl"]].values = np.where((self.ds[self.q_names_stratiform["cl"]].values > 1e-14), 1., 0.)
+            self.ds[self.strat_frac_names["pl"]].values = np.where((self.ds[self.q_names_stratiform["pl"]].values > 1e-14), 1., 0.)
+            self.ds[self.strat_frac_names_for_rad["pl"]].values = np.where((self.ds[self.q_names_stratiform["pl"]].values > 1e-14), 1., 0.)
+
+        self.model_name = "SCREAM"
+
+
 class CESM2(E3SMv1):
     def __init__(self, file_path, time_range=None, load_processed=False, time_dim="time", appended_str=False):
         """
